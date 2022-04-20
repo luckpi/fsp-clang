@@ -6,7 +6,7 @@ Frame Segmentation Protocol(FSP)：帧分割协议。
 ## 2. 功能
 在串口或者4G等一些通信介质中，数据会出现粘包的情况。此时可以应用本协议分割帧。
 
-## 2. 帧格式
+## 3. 帧格式
 
 帧头|帧长|校验|数据
 -|-|-|-
@@ -20,7 +20,7 @@ Frame Segmentation Protocol(FSP)：帧分割协议。
 
 协议是大端传输。
 
-## 3. 校验说明
+## 4. 校验说明
 
 - 如果校验值为全0，表示无需校验
 - CRC16算法类型：CRC-16/MODBUS,多项式是8005
@@ -33,7 +33,7 @@ Frame Segmentation Protocol(FSP)：帧分割协议。
 0x1 0x2 0x3 0x56 0x87|0x97 0xba
 0x9 0x12|0x87 0xed
 
-## 4. API
+## 5. API
 ```c
 // FspLoad Fsp载入
 bool FspLoad(void);
