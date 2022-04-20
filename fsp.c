@@ -14,7 +14,7 @@ static int mid = -1;
 
 static TZDataFunc fspCallback = NULL;
 
-// FspLoad 帧分割初始化
+// FspLoad Fsp载入
 bool FspLoad(void) {
     mid = TZMallocRegister(0, TAG, MALLOC_TOTAL);
     if (mid == -1) {

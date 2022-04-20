@@ -18,7 +18,7 @@
 
 #define FSP_FRAME_LEN_MAX 1024
 
-// FspLoad 帧风格初始化
+// FspLoad Fsp载入
 bool FspLoad(void);
 
 // FspSend 发送数据
