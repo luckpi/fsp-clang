@@ -103,6 +103,11 @@ void FspReceive(uint8_t *data, int dataLen) {
             continue;
         }
 
+        // 包头不完整，直接丢掉
+        if (dataLen - i < FSP_LEN) {
+            return;
+        }
+
         if (data[i + 1] != (FSP_FRAME_HEADER & 0xff)) {
             continue;
         }
