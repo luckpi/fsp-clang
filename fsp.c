@@ -10,6 +10,22 @@
 
 #define FSP_LEN 6
 
+typedef struct {
+    int len;
+    uint8_t buf[FSP_FRAME_LEN_MAX];
+} tBuffer;
+
+typedef enum {
+    HEADERHIGH,
+    HEADERLOW,
+    LENHIGH,
+    LENLOW,
+    CRCHIGH,
+    CRCLOW,
+    DATACPY,
+    DATACRC,
+} FspState;
+
 static int mid = -1;
 
 static TZDataFunc fspCallback = NULL;
@@ -73,72 +89,92 @@ bool FspSend(int pipe, uint8_t *data, int dataLen, bool isNeedCrc) {
 // FspReceive Fsp接收
 void FspReceive(uint8_t *data, int dataLen) {
     int i = 0;
-    static TZBufferDynamic *buffer = NULL;
+    static tBuffer buffer;
+    static int len = 0;
     static uint16_t crcNum = 0;
     static int remainderLen = 0;
+    static FspState fspState;
 
-    // 处理剩余的长度
-    if (remainderLen > 0) {
-        if (remainderLen > dataLen) {
-            memcpy(buffer->buf + (buffer->len - remainderLen), data, dataLen);
-            remainderLen -= dataLen;
-        } else {
-            memcpy(buffer->buf + (buffer->len - remainderLen), data, remainderLen);
-            remainderLen = 0;
-            if (crcNum == 0) {
-                fspCallback(buffer->buf, buffer->len);
-            } else if (Crc16Checksum(buffer->buf, buffer->len) == crcNum) {
-                fspCallback(buffer->buf, buffer->len);
-            } else {
-                LE(TAG, "crc error");
+    for (; i < dataLen;) {
+        switch (fspState) {
+        case HEADERHIGH:
+            if (data[i] == (FSP_FRAME_HEADER >> 8)) {
+                fspState = HEADERLOW;
             }
-            TZFree(buffer);
-            buffer = NULL;
+            i++;
+            break;
+        case HEADERLOW:
+            if (data[i] == (FSP_FRAME_HEADER & 0xff)) {
+                fspState = LENHIGH;
+                i++;
+            } else {
+                fspState = HEADERHIGH;
+            }
+            break;
+        case LENHIGH:
+            len = data[i] << 8;
+            if (len > FSP_FRAME_LEN_MAX) {
+                fspState = HEADERHIGH;
+            } else {
+                fspState = LENLOW;
+                i++;
+            }
+            break;
+        case LENLOW:
+            len |= data[i];
+            if (len > FSP_FRAME_LEN_MAX || len == 0) {
+                fspState = HEADERHIGH;
+            } else {
+                buffer.len = len;
+                fspState = CRCHIGH;
+                i++;
+            }
+            break;
+        case CRCHIGH:
+            crcNum = data[i] << 8;
+            fspState = CRCLOW;
+            i++;
+            break;
+        case CRCLOW:
+            crcNum |= data[i];
+            fspState = DATACPY;
+            i++;
+            break;
+        case DATACPY: {
+            int bodyLen = dataLen - i;
+            // 单帧数据拼接
+            if (remainderLen > 0) {
+                if (remainderLen > bodyLen) {
+                    memcpy(buffer.buf + (buffer.len - remainderLen), &data[i], bodyLen);
+                    remainderLen -= bodyLen;
+                    return;
+                } else {
+                    memcpy(buffer.buf + (buffer.len - remainderLen), &data[i], remainderLen);
+                    remainderLen = 0;
+                    fspState = DATACRC;
+                    i += remainderLen;
+                }
+            } else if (len > bodyLen) {
+                remainderLen = len - bodyLen;
+                memcpy(buffer.buf, &data[i], bodyLen);
+                return;
+            } else {
+                memcpy(buffer.buf, &data[i], len);
+                i += len;
+                fspState = DATACRC;
+            }
         }
-        return;
-    }
-
-    for (; i < dataLen; i++) {
-        if (data[i] != (FSP_FRAME_HEADER >> 8)) {
-            continue;
+        case DATACRC:
+            if (crcNum == 0x0) {
+                fspCallback(buffer.buf, buffer.len);
+            } else if (crcNum == Crc16Checksum(buffer.buf, buffer.len)) {
+                fspCallback(buffer.buf, buffer.len);
+            }
+            fspState = HEADERHIGH;
+            break;
+        default:
+            break;
         }
-
-        // 包头不完整，直接丢掉
-        if (dataLen - i < FSP_LEN) {
-            return;
-        }
-
-        if (data[i + 1] != (FSP_FRAME_HEADER & 0xff)) {
-            continue;
-        }
-
-        int bodyLen = dataLen - i - FSP_LEN;
-        int Len = (data[i + 2] << 8) | data[i + 3];
-
-        if (Len == 0 || Len > FSP_FRAME_LEN_MAX) {
-            continue;
-        }
-
-        // crc校验码
-        crcNum = (data[i + 4] << 8) | data[i + 5];
-
-        buffer = TZMalloc(mid, sizeof(TZBufferDynamic) + Len);
-        buffer->len = Len;
-        memcpy(buffer->buf, &data[i + FSP_LEN], bodyLen);
-
-        if (Len > bodyLen) {
-            remainderLen = Len - bodyLen;
-            return;
-        }
-
-        if (crcNum == 0) {
-            fspCallback(buffer->buf, buffer->len);
-        } else if (Crc16Checksum(buffer->buf, buffer->len) == crcNum) {
-            fspCallback(buffer->buf, buffer->len);
-        }
-
-        TZFree(buffer);
-        buffer = NULL;
     }
 }
 
