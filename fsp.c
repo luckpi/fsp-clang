@@ -6,29 +6,38 @@
 
 #define TAG "fsp"
 // tzmalloc字节数
-#define MALLOC_TOTAL 4096
+#define MALLOC_TOTAL 8192
 
 #define FSP_LEN 6
 
-typedef struct {
-    int len;
-    uint8_t buf[FSP_FRAME_LEN_MAX];
-} tBuffer;
+typedef struct
+{
+    TZDataFunc callback;
+} tItem;
 
 typedef enum {
-    HEADERHIGH,
-    HEADERLOW,
-    LENHIGH,
-    LENLOW,
-    CRCHIGH,
-    CRCLOW,
-    DATACPY,
-    DATACRC,
+    HEADER_HIGH,
+    HEADER_LOW,
+    LEN_HIGH,
+    LEN_LOW,
+    DATA_CPY,
 } FspState;
 
 static int mid = -1;
 
-static TZDataFunc fspCallback = NULL;
+// 观察者列表
+static intptr_t gList = 0;
+
+// 接收fifo
+static intptr_t rxFifo;
+static TZBufferDynamic *buffer;
+
+static int task(void);
+static bool fspDataCrc(uint16_t crcNum, uint8_t *data, int size);
+static void notifyObserver(uint8_t *bytes, int size);
+static bool isExistObserver(TZDataFunc callback);
+static void FspRun(uint8_t *data, int dataLen);
+static bool rxFifoCreate(void);
 
 // FspLoad Fsp载入
 bool FspLoad(void) {
@@ -37,6 +46,27 @@ bool FspLoad(void) {
         LE(TAG, "load failed!malloc failed");
         return false;
     }
+
+    gList = TZListCreateList(mid);
+    if (gList == 0) {
+        LE(TAG, "load failed!create list failed");
+        return false;
+    }
+
+    buffer = TZMalloc(mid, sizeof(TZBufferDynamic) + FSP_FRAME_LEN_MAX);
+    if (buffer == NULL) {
+        LE(TAG, "load failed!malloc rx buffer failed");
+        return false;
+    }
+
+    if (rxFifoCreate() == false) {
+        return false;
+    }
+
+    if (AsyncStart(task, ASYNC_NO_WAIT) == false) {
+        return false;
+    }
+
     LI(TAG, "load success");
     return true;
 }
@@ -46,9 +76,13 @@ bool FspLoad(void) {
 TZBufferDynamic *FspGetTxBytes(uint8_t *data, int dataLen, bool isNeedCrc) {
     TZBufferDynamic *buffer = NULL;
     buffer = TZMalloc(mid, sizeof(TZBufferDynamic) + dataLen + FSP_LEN);
+    if (buffer == NULL) {
+        LE(TAG, "tx failed!buffer malloc failed");
+        return NULL;
+    }
     buffer->len = dataLen + FSP_LEN;
-    buffer->buf[0] = FSP_FRAME_HEADER >> 8;
-    buffer->buf[1] = FSP_FRAME_HEADER & 0xff;
+    buffer->buf[0] = FSP_FRAME_HEADER_HIGH;
+    buffer->buf[1] = FSP_FRAME_HEADER_LOW;
     buffer->buf[2] = dataLen >> 8;
     buffer->buf[3] = dataLen & 0xff;
     if (isNeedCrc == true) {
@@ -63,125 +97,183 @@ TZBufferDynamic *FspGetTxBytes(uint8_t *data, int dataLen, bool isNeedCrc) {
     return buffer;
 }
 
-// FspSend 发送数据
-bool FspSend(int pipe, uint8_t *data, int dataLen, bool isNeedCrc) {
-    if (VSocketIsAllowSend(pipe) == false) {
-        LE(TAG, "tx failed!pipe:%d is not allow send", pipe);
-        return false;
+static int task(void) {
+    static struct pt pt = {0};
+
+    PT_BEGIN(&pt);
+
+    PT_WAIT_UNTIL(&pt, TZFifoReadable(rxFifo));
+
+    buffer->len = TZFifoReadBytes(rxFifo, buffer->buf, FSP_FRAME_LEN_MAX);
+
+    FspRun(buffer->buf, buffer->len);
+
+    PT_END(&pt);
+}
+
+static void FspRun(uint8_t *data, int dataLen) {
+    int i = 0;
+    static TZBuffer buffer;
+    static int len = 0;
+    static int dataCpyOffsetAddr = 0;
+    static FspState fspState;
+
+    while (i < dataLen) {
+        switch (fspState) {
+        case HEADER_HIGH:
+            if (data[i] == FSP_FRAME_HEADER_HIGH) {
+                fspState = HEADER_LOW;
+            }
+            i++;
+            break;
+        case HEADER_LOW:
+            if (data[i] == FSP_FRAME_HEADER_LOW) {
+                fspState = LEN_HIGH;
+                i++;
+            } else {
+                fspState = HEADER_HIGH;
+            }
+            break;
+        case LEN_HIGH:
+            len = data[i] << 8;
+            if (len > FSP_FRAME_LEN_MAX) {
+                fspState = HEADER_HIGH;
+            } else {
+                fspState = LEN_LOW;
+                i++;
+            }
+            break;
+        case LEN_LOW:
+            len |= data[i];
+            // 加上crc的两个字节
+            len += 2;
+            if (len > FSP_FRAME_LEN_MAX || len == 0) {
+                fspState = HEADER_HIGH;
+            } else {
+                buffer.len = len;
+                fspState = DATA_CPY;
+                i++;
+            }
+            break;
+        case DATA_CPY: {
+            int dataCpyLen = dataLen - i;
+
+            if (len > dataCpyLen) {
+                len -= dataCpyLen;
+            } else {
+                dataCpyLen = len;
+                len = 0;
+            }
+
+            memcpy(buffer.buf + dataCpyOffsetAddr, &data[i], dataCpyLen);
+
+            // 数据完整性检测
+            if (len == 0) {
+                uint16_t crcNum = buffer.buf[0] << 8 | buffer.buf[1];
+                if (fspDataCrc(crcNum, &buffer.buf[2], buffer.len - 2) == true) {
+                    i += dataCpyLen;
+                }
+                dataCpyOffsetAddr = 0;
+                fspState = HEADER_HIGH;
+            } else {
+                dataCpyOffsetAddr = buffer.len - len;
+                return;
+            }
+            break;
+        }
+        default:
+            fspState = HEADER_HIGH;
+            break;
+        }
     }
+}
 
-    TZBufferDynamic *buffer = FspGetTxBytes(data, dataLen, isNeedCrc);
-    if (buffer == NULL) {
-        LE(TAG, "tx failed!get bytes failed");
-        return false;
+static bool fspDataCrc(uint16_t crcNum, uint8_t *data, int size) {
+    if (crcNum != 0x0) {
+        if (crcNum != Crc16Checksum(data, size)) {
+            return false;
+        }
     }
-
-    VSocketTxParam txParam;
-    txParam.Bytes = buffer->buf;
-    txParam.Size = buffer->len;
-    txParam.Pipe = pipe;
-    VSocketTx(&txParam);
-
-    TZFree(buffer);
+    notifyObserver(data, size);
     return true;
 }
 
 // FspReceive Fsp接收
 void FspReceive(uint8_t *data, int dataLen) {
-    int i = 0;
-    static tBuffer buffer;
-    static int len = 0;
-    static uint16_t crcNum = 0;
-    static int remainderLen = 0;
-    static FspState fspState;
+    if (TZFifoWriteable(rxFifo) == false) {
+        LW(TAG, "deal data is too slow.throw frame!");
+        return;
+    }
+    TZFifoWriteBytes(rxFifo, data, dataLen);
+}
 
-    for (; i < dataLen;) {
-        switch (fspState) {
-        case HEADERHIGH:
-            if (data[i] == (FSP_FRAME_HEADER >> 8)) {
-                fspState = HEADERLOW;
-            }
-            i++;
-            break;
-        case HEADERLOW:
-            if (data[i] == (FSP_FRAME_HEADER & 0xff)) {
-                fspState = LENHIGH;
-                i++;
-            } else {
-                fspState = HEADERHIGH;
-            }
-            break;
-        case LENHIGH:
-            len = data[i] << 8;
-            if (len > FSP_FRAME_LEN_MAX) {
-                fspState = HEADERHIGH;
-            } else {
-                fspState = LENLOW;
-                i++;
-            }
-            break;
-        case LENLOW:
-            len |= data[i];
-            if (len > FSP_FRAME_LEN_MAX || len == 0) {
-                fspState = HEADERHIGH;
-            } else {
-                buffer.len = len;
-                fspState = CRCHIGH;
-                i++;
-            }
-            break;
-        case CRCHIGH:
-            crcNum = data[i] << 8;
-            fspState = CRCLOW;
-            i++;
-            break;
-        case CRCLOW:
-            crcNum |= data[i];
-            fspState = DATACPY;
-            i++;
-            break;
-        case DATACPY: {
-            int bodyLen = dataLen - i;
-            // 单帧数据拼接
-            if (remainderLen > 0) {
-                if (remainderLen > bodyLen) {
-                    memcpy(buffer.buf + (buffer.len - remainderLen), &data[i], bodyLen);
-                    remainderLen -= bodyLen;
-                    return;
-                } else {
-                    memcpy(buffer.buf + (buffer.len - remainderLen), &data[i], remainderLen);
-                    remainderLen = 0;
-                    fspState = DATACRC;
-                    i += remainderLen;
-                }
-            } else if (len > bodyLen) {
-                remainderLen = len - bodyLen;
-                memcpy(buffer.buf, &data[i], bodyLen);
-                return;
-            } else {
-                memcpy(buffer.buf, &data[i], len);
-                i += len;
-                fspState = DATACRC;
-            }
-        }
-        case DATACRC:
-            if (crcNum == 0x0) {
-                fspCallback(buffer.buf, buffer.len);
-            } else if (crcNum == Crc16Checksum(buffer.buf, buffer.len)) {
-                fspCallback(buffer.buf, buffer.len);
-            }
-            fspState = HEADERHIGH;
-            break;
-        default:
+// FspRegisterObserver() 注册Fsp回调函数
+bool FspRegisterObserver(TZDataFunc callback) {
+    if (gList == 0 || callback == NULL) {
+        return false;
+    }
+    if (isExistObserver(callback)) {
+        return true;
+    }
+
+    TZListNode *node = TZListCreateNode(gList);
+    if (node == NULL) {
+        return false;
+    }
+    node->Data = TZMalloc(mid, sizeof(tItem));
+    if (node->Data == NULL) {
+        TZFree(node);
+        return false;
+    }
+    node->Size = sizeof(tItem);
+
+    tItem *item = (tItem *)node->Data;
+    item->callback = callback;
+    TZListAppend(gList, node);
+    return true;
+}
+
+static void notifyObserver(uint8_t *bytes, int size) {
+    TZListNode *node = TZListGetHeader(gList);
+    tItem *item = NULL;
+    for (;;) {
+        if (node == NULL) {
             break;
         }
+
+        item = (tItem *)node->Data;
+        if (item->callback) {
+            item->callback(bytes, size);
+        }
+
+        node = node->Next;
     }
 }
 
-// FspReceive Fsp接收
-void FspReceive(uint8_t *data, int dataLen);
+static bool isExistObserver(TZDataFunc callback) {
+    TZListNode *node = TZListGetHeader(gList);
+    tItem *item = NULL;
+    for (;;) {
+        if (node == NULL) {
+            break;
+        }
 
-// FspRegisterObserver() 注册Fsp回调函数
-void FspRegisterCallback(TZDataFunc callback) {
-    fspCallback = callback;
+        item = (tItem *)node->Data;
+        if (item->callback == callback) {
+            return true;
+        }
+
+        node = node->Next;
+    }
+    return false;
+}
+
+static bool rxFifoCreate(void) {
+    // 多4个字节是因为fifo存储混合结构体需增加4字节长度
+    rxFifo = TZFifoCreate(mid, FSP_RX_FIFO_ITEM_SUM, FSP_FRAME_LEN_MAX + 4);
+    if (rxFifo == 0) {
+        LE(TAG, "create failed!create rx fifo failed");
+        return false;
+    }
+    return true;
 }
