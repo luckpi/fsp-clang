@@ -44,6 +44,6 @@ bool FspSend(int pipe, uint8_t *data, int dataLen, bool isNeedCrc);
 // FspReceive Fsp接收
 void FspReceive(uint8_t *data, int dataLen);
 
-// FspRegisterObserver() 注册Fsp回调函数
-void FspRegisterCallback(TZDataFunc callback);
+// FspRegisterObserver() 注册Fsp观察者
+bool FspRegisterObserver(TZDataFunc callback);
 ```
