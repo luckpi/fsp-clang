@@ -18,17 +18,11 @@
 #include "tztype.h"
 #include "vsocket.h"
 
-// 帧头部，两个字节
-#define FSP_FRAME_HEADER_HIGH 0xC5
-#define FSP_FRAME_HEADER_LOW 0x5C
-
-#define FSP_FRAME_LEN_MAX 1600
-
-// FIFO元素数
-#define FSP_RX_FIFO_ITEM_SUM 3
-
 // FspLoad Fsp载入
-bool FspLoad(void);
+// mallocTotal malloc内存大小
+// frameMaxLen 最大帧长
+// fifoItemSum fifo元素和
+bool FspLoad(int mallocTotal, int frameMaxLen, int fifoItemSum);
 
 // ToolGetTxBytes 读取发送字节流
 // 注意:谁调用谁释放空间

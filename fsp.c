@@ -5,8 +5,10 @@
 #include "pt.h"
 
 #define TAG "fsp"
-// tzmalloc字节数
-#define MALLOC_TOTAL 8192
+
+// 帧头部，两个字节
+#define FSP_FRAME_HEADER_HIGH 0xC5
+#define FSP_FRAME_HEADER_LOW 0x5C
 
 #define FSP_LEN 6
 
@@ -32,16 +34,23 @@ static intptr_t gList = 0;
 static intptr_t rxFifo;
 static TZBufferDynamic *buffer;
 
+// 接收最大长度
+static int gFrameMaxLen = 0;
+
 static int task(void);
 static bool fspDataCrc(uint16_t crcNum, uint8_t *data, int size);
 static void notifyObserver(uint8_t *bytes, int size);
 static bool isExistObserver(TZDataFunc callback);
 static void FspRun(uint8_t *data, int dataLen);
-static bool rxFifoCreate(void);
+static bool rxFifoCreate(int itemSum, int itemSize);
 
 // FspLoad Fsp载入
-bool FspLoad(void) {
-    mid = TZMallocRegister(0, TAG, MALLOC_TOTAL);
+// mallocTotal malloc内存大小
+// frameMaxLen 最大帧长
+// fifoItemSum fifo元素和
+bool FspLoad(int mallocTotal, int frameMaxLen, int fifoItemSum) {
+    gFrameMaxLen = frameMaxLen;
+    mid = TZMallocRegister(0, TAG, mallocTotal);
     if (mid == -1) {
         LE(TAG, "load failed!malloc failed");
         return false;
@@ -53,13 +62,13 @@ bool FspLoad(void) {
         return false;
     }
 
-    buffer = TZMalloc(mid, sizeof(TZBufferDynamic) + FSP_FRAME_LEN_MAX);
+    buffer = TZMalloc(mid, sizeof(TZBufferDynamic) + frameMaxLen);
     if (buffer == NULL) {
         LE(TAG, "load failed!malloc rx buffer failed");
         return false;
     }
 
-    if (rxFifoCreate() == false) {
+    if (rxFifoCreate(fifoItemSum, frameMaxLen) == false) {
         return false;
     }
 
@@ -104,7 +113,7 @@ static int task(void) {
 
     PT_WAIT_UNTIL(&pt, TZFifoReadable(rxFifo));
 
-    buffer->len = TZFifoReadBytes(rxFifo, buffer->buf, FSP_FRAME_LEN_MAX);
+    buffer->len = TZFifoReadBytes(rxFifo, buffer->buf, gFrameMaxLen);
 
     FspRun(buffer->buf, buffer->len);
 
@@ -136,7 +145,7 @@ static void FspRun(uint8_t *data, int dataLen) {
             break;
         case LEN_HIGH:
             len = data[i] << 8;
-            if (len > FSP_FRAME_LEN_MAX) {
+            if (len > gFrameMaxLen) {
                 fspState = HEADER_HIGH;
             } else {
                 fspState = LEN_LOW;
@@ -147,7 +156,7 @@ static void FspRun(uint8_t *data, int dataLen) {
             len |= data[i];
             // 加上crc的两个字节
             len += 2;
-            if (len > FSP_FRAME_LEN_MAX || len == 0) {
+            if (len > gFrameMaxLen || len == 0) {
                 fspState = HEADER_HIGH;
             } else {
                 buffer.len = len;
@@ -268,9 +277,9 @@ static bool isExistObserver(TZDataFunc callback) {
     return false;
 }
 
-static bool rxFifoCreate(void) {
+static bool rxFifoCreate(int itemSum, int itemSize) {
     // 多4个字节是因为fifo存储混合结构体需增加4字节长度
-    rxFifo = TZFifoCreate(mid, FSP_RX_FIFO_ITEM_SUM, FSP_FRAME_LEN_MAX + 4);
+    rxFifo = TZFifoCreate(mid, itemSum, itemSize + 4);
     if (rxFifo == 0) {
         LE(TAG, "create failed!create rx fifo failed");
         return false;
