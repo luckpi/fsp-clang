@@ -32,7 +32,7 @@ static intptr_t gList = 0;
 
 // 接收fifo
 static intptr_t rxFifo;
-static TZBufferDynamic *buffer;
+static TZBufferDynamic *gBuffer;
 
 // 接收最大长度
 static int gFrameMaxLen = 0;
@@ -62,8 +62,8 @@ bool FspLoad(int mallocTotal, int frameMaxLen, int fifoItemSum) {
         return false;
     }
 
-    buffer = TZMalloc(mid, sizeof(TZBufferDynamic) + frameMaxLen);
-    if (buffer == NULL) {
+    gBuffer = TZMalloc(mid, sizeof(TZBufferDynamic) + frameMaxLen);
+    if (gBuffer == NULL) {
         LE(TAG, "load failed!malloc rx buffer failed");
         return false;
     }
@@ -92,8 +92,8 @@ TZBufferDynamic *FspGetTxBytes(uint8_t *data, int dataLen, bool isNeedCrc) {
     buffer->len = dataLen + FSP_LEN;
     buffer->buf[0] = FSP_FRAME_HEADER_HIGH;
     buffer->buf[1] = FSP_FRAME_HEADER_LOW;
-    buffer->buf[2] = dataLen >> 8;
-    buffer->buf[3] = dataLen & 0xff;
+    buffer->buf[2] = buffer->len >> 8;
+    buffer->buf[3] = buffer->len & 0xff;
     if (isNeedCrc == true) {
         int crc = Crc16Checksum(data, dataLen);
         buffer->buf[4] = crc >> 8;
@@ -113,16 +113,16 @@ static int task(void) {
 
     PT_WAIT_UNTIL(&pt, TZFifoReadable(rxFifo));
 
-    buffer->len = TZFifoReadBytes(rxFifo, buffer->buf, gFrameMaxLen);
+    gBuffer->len = TZFifoReadBytes(rxFifo, gBuffer->buf, gFrameMaxLen);
 
-    FspRun(buffer->buf, buffer->len);
+    FspRun(gBuffer->buf, gBuffer->len);
 
     PT_END(&pt);
 }
 
 static void FspRun(uint8_t *data, int dataLen) {
     int i = 0;
-    static TZBuffer buffer;
+    static TZBufferDynamic *buffer = NULL;
     static int len = 0;
     static int dataCpyOffsetAddr = 0;
     static FspState fspState;
@@ -154,12 +154,13 @@ static void FspRun(uint8_t *data, int dataLen) {
             break;
         case LEN_LOW:
             len |= data[i];
-            // 加上crc的两个字节
-            len += 2;
-            if (len > gFrameMaxLen || len == 0) {
+            if (len > gFrameMaxLen || len < FSP_LEN) {
                 fspState = HEADER_HIGH;
             } else {
-                buffer.len = len;
+                // 减去FSP帧头长度，但需要加上crc的两个字节
+                len -= FSP_LEN - 2;
+                buffer = TZMalloc(mid, sizeof(TZBufferDynamic) + len);
+                buffer->len = len;
                 fspState = DATA_CPY;
                 i++;
             }
@@ -173,19 +174,21 @@ static void FspRun(uint8_t *data, int dataLen) {
                 dataCpyLen = len;
                 len = 0;
             }
-
-            memcpy(buffer.buf + dataCpyOffsetAddr, &data[i], dataCpyLen);
+                
+            memcpy(buffer->buf + dataCpyOffsetAddr, &data[i], dataCpyLen);
 
             // 数据完整性检测
             if (len == 0) {
-                uint16_t crcNum = buffer.buf[0] << 8 | buffer.buf[1];
-                if (fspDataCrc(crcNum, &buffer.buf[2], buffer.len - 2) == true) {
+                uint16_t crcNum = buffer->buf[0] << 8 | buffer->buf[1];
+                if (fspDataCrc(crcNum, &buffer->buf[2], buffer->len - 2) == true) {
+                    notifyObserver(&buffer->buf[2], buffer->len - 2);
                     i += dataCpyLen;
                 }
                 dataCpyOffsetAddr = 0;
                 fspState = HEADER_HIGH;
+                TZFree(buffer);
             } else {
-                dataCpyOffsetAddr = buffer.len - len;
+                dataCpyOffsetAddr = buffer->len - len;
                 return;
             }
             break;
@@ -199,11 +202,12 @@ static void FspRun(uint8_t *data, int dataLen) {
 
 static bool fspDataCrc(uint16_t crcNum, uint8_t *data, int size) {
     if (crcNum != 0x0) {
-        if (crcNum != Crc16Checksum(data, size)) {
+        uint16_t calcCrc = Crc16Checksum(data, size);
+        if (crcNum != calcCrc) {
+            LE(TAG, "crc err, crcNum = %d, clacCrc = %d", crcNum, calcCrc);
             return false;
         }
     }
-    notifyObserver(data, size);
     return true;
 }
 
