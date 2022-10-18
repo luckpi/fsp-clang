@@ -15,6 +15,7 @@
 #include "tzfifo.h"
 #include "tzlist.h"
 #include "tzmalloc.h"
+#include "tztime.h"
 #include "tztype.h"
 #include "vsocket.h"
 
@@ -22,7 +23,8 @@
 // mallocTotal malloc内存大小
 // frameMaxLen 最大帧长
 // fifoItemSum fifo元素和
-bool FspLoad(int mallocTotal, int frameMaxLen, int fifoItemSum);
+// timeoutM 超时时间, 单位: Ms
+bool FspLoad(int mallocTotal, int frameMaxLen, int fifoItemSum, uint64_t timeout);
 
 // ToolGetTxBytes 读取发送字节流
 // 注意:谁调用谁释放空间

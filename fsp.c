@@ -37,6 +37,8 @@ static TZBufferDynamic *gBuffer;
 // 接收最大长度
 static int gFrameMaxLen = 0;
 
+static uint64_t gTimeout = 0;
+
 static int task(void);
 static bool fspDataCrc(uint16_t crcNum, uint8_t *data, int size);
 static void notifyObserver(uint8_t *bytes, int size);
@@ -48,8 +50,10 @@ static bool rxFifoCreate(int itemSum, int itemSize);
 // mallocTotal malloc内存大小
 // frameMaxLen 最大帧长
 // fifoItemSum fifo元素和
-bool FspLoad(int mallocTotal, int frameMaxLen, int fifoItemSum) {
+// timeoutM 超时时间, 单位: Ms
+bool FspLoad(int mallocTotal, int frameMaxLen, int fifoItemSum, uint64_t timeout) {
     gFrameMaxLen = frameMaxLen;
+    gTimeout = timeout;
     mid = TZMallocRegister(0, TAG, mallocTotal);
     if (mid == -1) {
         LE(TAG, "load failed!malloc failed");
@@ -126,6 +130,14 @@ static void FspRun(uint8_t *data, int dataLen) {
     static int len = 0;
     static int dataCpyOffsetAddr = 0;
     static FspState fspState;
+    static uint64_t timeBegin = 0;
+
+    if (TZTimeGet() - timeBegin > gTimeout) {
+        fspState = HEADER_HIGH;
+        TZFree(buffer);
+    }
+
+    timeBegin = TZTimeGet();
 
     while (i < dataLen) {
         switch (fspState) {
@@ -174,7 +186,7 @@ static void FspRun(uint8_t *data, int dataLen) {
                 dataCpyLen = len;
                 len = 0;
             }
-                
+
             memcpy(buffer->buf + dataCpyOffsetAddr, &data[i], dataCpyLen);
 
             // 数据完整性检测
@@ -187,6 +199,7 @@ static void FspRun(uint8_t *data, int dataLen) {
                 dataCpyOffsetAddr = 0;
                 fspState = HEADER_HIGH;
                 TZFree(buffer);
+                buffer = NULL;
             } else {
                 dataCpyOffsetAddr = buffer->len - len;
                 return;
