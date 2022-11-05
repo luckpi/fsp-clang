@@ -32,6 +32,8 @@ static intptr_t gList = 0;
 
 // 接收fifo
 static intptr_t rxFifo;
+static TZBufferDynamic *rxBuffer;
+// 帧数据
 static TZBufferDynamic *gBuffer;
 
 // 接收最大长度
@@ -68,6 +70,12 @@ bool FspLoad(int mallocTotal, int frameMaxLen, int fifoItemSum, uint64_t timeout
 
     gBuffer = TZMalloc(mid, sizeof(TZBufferDynamic) + frameMaxLen);
     if (gBuffer == NULL) {
+        LE(TAG, "load failed!malloc gbuffer failed");
+        return false;
+    }
+
+    rxBuffer = TZMalloc(mid, sizeof(TZBufferDynamic) + frameMaxLen);
+    if (rxBuffer == NULL) {
         LE(TAG, "load failed!malloc rx buffer failed");
         return false;
     }
@@ -117,24 +125,26 @@ static int task(void) {
 
     PT_WAIT_UNTIL(&pt, TZFifoReadable(rxFifo));
 
-    gBuffer->len = TZFifoReadBytes(rxFifo, gBuffer->buf, gFrameMaxLen);
+    rxBuffer->len = TZFifoReadBytes(rxFifo, rxBuffer->buf, gFrameMaxLen);
 
-    FspRun(gBuffer->buf, gBuffer->len);
+    FspRun(rxBuffer->buf, rxBuffer->len);
 
     PT_END(&pt);
 }
 
 static void FspRun(uint8_t *data, int dataLen) {
     int i = 0;
-    static TZBufferDynamic *buffer = NULL;
     static int len = 0;
     static int dataCpyOffsetAddr = 0;
     static FspState fspState;
     static uint64_t timeBegin = 0;
 
     if (TZTimeGet() - timeBegin > gTimeout) {
+        LD(TAG, "timeout");
         fspState = HEADER_HIGH;
-        TZFree(buffer);
+        len = 0;
+        gBuffer->len = 0;
+        dataCpyOffsetAddr = 0;
     }
 
     timeBegin = TZTimeGet();
@@ -171,8 +181,7 @@ static void FspRun(uint8_t *data, int dataLen) {
             } else {
                 // 减去FSP帧头长度，但需要加上crc的两个字节
                 len -= FSP_LEN - 2;
-                buffer = TZMalloc(mid, sizeof(TZBufferDynamic) + len);
-                buffer->len = len;
+                gBuffer->len = len;
                 fspState = DATA_CPY;
                 i++;
             }
@@ -187,21 +196,20 @@ static void FspRun(uint8_t *data, int dataLen) {
                 len = 0;
             }
 
-            memcpy(buffer->buf + dataCpyOffsetAddr, &data[i], dataCpyLen);
+            memcpy(gBuffer->buf + dataCpyOffsetAddr, &data[i], dataCpyLen);
 
             // 数据完整性检测
             if (len == 0) {
-                uint16_t crcNum = buffer->buf[0] << 8 | buffer->buf[1];
-                if (fspDataCrc(crcNum, &buffer->buf[2], buffer->len - 2) == true) {
-                    notifyObserver(&buffer->buf[2], buffer->len - 2);
+                uint16_t crcNum = gBuffer->buf[0] << 8 | gBuffer->buf[1];
+                if (fspDataCrc(crcNum, &gBuffer->buf[2], gBuffer->len - 2) == true) {
+                    notifyObserver(&gBuffer->buf[2], gBuffer->len - 2);
                     i += dataCpyLen;
                 }
                 dataCpyOffsetAddr = 0;
+                gBuffer->len = 0;
                 fspState = HEADER_HIGH;
-                TZFree(buffer);
-                buffer = NULL;
             } else {
-                dataCpyOffsetAddr = buffer->len - len;
+                dataCpyOffsetAddr = gBuffer->len - len;
                 return;
             }
             break;
