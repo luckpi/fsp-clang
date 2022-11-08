@@ -139,7 +139,7 @@ static void FspRun(uint8_t *data, int dataLen) {
     static FspState fspState;
     static uint64_t timeBegin = 0;
 
-    if (TZTimeGet() - timeBegin > gTimeout) {
+    if (TZTimeGet() - timeBegin > gTimeout && fspState != HEADER_HIGH) {
         LD(TAG, "timeout");
         fspState = HEADER_HIGH;
         len = 0;
