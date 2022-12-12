@@ -14,7 +14,7 @@
 
 typedef struct
 {
-    TZDataFunc callback;
+    TZPipeDataFunc callback;
 } tItem;
 
 typedef enum {
@@ -23,18 +23,33 @@ typedef enum {
     LEN_HIGH,
     LEN_LOW,
     DATA_CPY,
-} FspState;
+} tFspState;
+
+typedef struct {
+    uint64_t rxTime;
+    int pipe;
+} tRxTag;
+
+typedef struct {
+    uint64_t rxTime;
+    int pipe;
+    tFspState state;
+    int framelen;
+    int dataCpyOffsetAddr;
+    TZBufferDynamic *gBuffer;
+} tFspParam;
 
 static int mid = -1;
 
 // 观察者列表
-static intptr_t gList = 0;
+static intptr_t gObserverList = 0;
+
+// 参数列表
+static intptr_t gParamList = 0;
 
 // 接收fifo
 static intptr_t rxFifo;
 static TZBufferDynamic *rxBuffer;
-// 帧数据
-static TZBufferDynamic *gBuffer;
 
 // 接收最大长度
 static int gFrameMaxLen = 0;
@@ -43,10 +58,13 @@ static uint64_t gTimeout = 0;
 
 static int task(void);
 static bool fspDataCrc(uint16_t crcNum, uint8_t *data, int size);
-static void notifyObserver(uint8_t *bytes, int size);
-static bool isExistObserver(TZDataFunc callback);
-static void FspRun(uint8_t *data, int dataLen);
+static void notifyObserver(uint8_t *bytes, int size, int pipe);
+static bool isExistObserver(TZPipeDataFunc callback);
+static void fspRun(tFspParam *param, uint8_t *data, int dataLen);
 static bool rxFifoCreate(int itemSum, int itemSize);
+static tFspParam *pipeParamGet(int pipe);
+static tFspParam *pipeParamCreate(int pipe);
+static void fspTimeOutCheck(tFspParam *param, uint64_t timestamp);
 
 // FspLoad Fsp载入
 // mallocTotal malloc内存大小
@@ -62,15 +80,15 @@ bool FspLoad(int mallocTotal, int frameMaxLen, int fifoItemSum, uint64_t timeout
         return false;
     }
 
-    gList = TZListCreateList(mid);
-    if (gList == 0) {
+    gObserverList = TZListCreateList(mid);
+    if (gObserverList == 0) {
         LE(TAG, "load failed!create list failed");
         return false;
     }
 
-    gBuffer = TZMalloc(mid, sizeof(TZBufferDynamic) + frameMaxLen);
-    if (gBuffer == NULL) {
-        LE(TAG, "load failed!malloc gbuffer failed");
+    gParamList = TZListCreateList(mid);
+    if (gParamList == 0) {
+        LE(TAG, "load failed!create list failed");
         return false;
     }
 
@@ -125,97 +143,98 @@ static int task(void) {
 
     PT_WAIT_UNTIL(&pt, TZFifoReadable(rxFifo));
 
-    rxBuffer->len = TZFifoReadBytes(rxFifo, rxBuffer->buf, gFrameMaxLen);
+    tRxTag tag;
 
-    FspRun(rxBuffer->buf, rxBuffer->len);
+    rxBuffer->len = TZFifoReadMix(rxFifo, (uint8_t *)&tag, sizeof(tag), rxBuffer->buf, gFrameMaxLen);
+
+    tFspParam *param = pipeParamGet(tag.pipe);
+    fspTimeOutCheck(param, tag.rxTime);
+    fspRun(param, rxBuffer->buf, rxBuffer->len);
 
     PT_END(&pt);
 }
 
-static void FspRun(uint8_t *data, int dataLen) {
-    int i = 0;
-    static int len = 0;
-    static int dataCpyOffsetAddr = 0;
-    static FspState fspState;
-    static uint64_t timeBegin = 0;
-
-    if (TZTimeGet() - timeBegin > gTimeout && fspState != HEADER_HIGH) {
-        LD(TAG, "timeout");
-        fspState = HEADER_HIGH;
-        len = 0;
-        gBuffer->len = 0;
-        dataCpyOffsetAddr = 0;
+static void fspTimeOutCheck(tFspParam *param, uint64_t timestamp) {
+    if (timestamp - param->rxTime > gTimeout && param->state != HEADER_HIGH) {
+        LW(TAG, "timeout");
+        param->state = HEADER_HIGH;
+        param->framelen = 0;
+        param->dataCpyOffsetAddr = 0;
+        param->gBuffer->len = 0;
     }
+    param->rxTime = timestamp;
+}
 
-    timeBegin = TZTimeGet();
+static void fspRun(tFspParam *param, uint8_t *data, int dataLen) {
+    int i = 0;
 
     while (i < dataLen) {
-        switch (fspState) {
+        switch (param->state) {
         case HEADER_HIGH:
             if (data[i] == FSP_FRAME_HEADER_HIGH) {
-                fspState = HEADER_LOW;
+                param->state = HEADER_LOW;
             }
             i++;
             break;
         case HEADER_LOW:
             if (data[i] == FSP_FRAME_HEADER_LOW) {
-                fspState = LEN_HIGH;
+                param->state = LEN_HIGH;
                 i++;
             } else {
-                fspState = HEADER_HIGH;
+                param->state = HEADER_HIGH;
             }
             break;
         case LEN_HIGH:
-            len = data[i] << 8;
-            if (len > gFrameMaxLen) {
-                fspState = HEADER_HIGH;
+            param->framelen = data[i] << 8;
+            if (param->framelen > gFrameMaxLen) {
+                param->state = HEADER_HIGH;
             } else {
-                fspState = LEN_LOW;
+                param->state = LEN_LOW;
                 i++;
             }
             break;
         case LEN_LOW:
-            len |= data[i];
-            if (len > gFrameMaxLen || len < FSP_LEN) {
-                fspState = HEADER_HIGH;
+            param->framelen |= data[i];
+            if (param->framelen > gFrameMaxLen || param->framelen < FSP_LEN) {
+                param->state = HEADER_HIGH;
             } else {
                 // 减去FSP帧头长度，但需要加上crc的两个字节
-                len -= FSP_LEN - 2;
-                gBuffer->len = len;
-                fspState = DATA_CPY;
+                param->framelen -= FSP_LEN - 2;
+                param->gBuffer->len = param->framelen;
+                param->state = DATA_CPY;
                 i++;
             }
             break;
         case DATA_CPY: {
             int dataCpyLen = dataLen - i;
 
-            if (len > dataCpyLen) {
-                len -= dataCpyLen;
+            if (param->framelen > dataCpyLen) {
+                param->framelen -= dataCpyLen;
             } else {
-                dataCpyLen = len;
-                len = 0;
+                dataCpyLen = param->framelen;
+                param->framelen = 0;
             }
 
-            memcpy(gBuffer->buf + dataCpyOffsetAddr, &data[i], dataCpyLen);
+            memcpy(param->gBuffer->buf + param->dataCpyOffsetAddr, &data[i], dataCpyLen);
 
             // 数据完整性检测
-            if (len == 0) {
-                uint16_t crcNum = gBuffer->buf[0] << 8 | gBuffer->buf[1];
-                if (fspDataCrc(crcNum, &gBuffer->buf[2], gBuffer->len - 2) == true) {
-                    notifyObserver(&gBuffer->buf[2], gBuffer->len - 2);
+            if (param->framelen == 0) {
+                uint16_t crcNum = param->gBuffer->buf[0] << 8 | param->gBuffer->buf[1];
+                if (fspDataCrc(crcNum, &param->gBuffer->buf[2], param->gBuffer->len - 2) == true) {
+                    notifyObserver(&param->gBuffer->buf[2], param->gBuffer->len - 2, param->pipe);
                     i += dataCpyLen;
                 }
-                dataCpyOffsetAddr = 0;
-                gBuffer->len = 0;
-                fspState = HEADER_HIGH;
+                param->dataCpyOffsetAddr = 0;
+                param->gBuffer->len = 0;
+                param->state = HEADER_HIGH;
             } else {
-                dataCpyOffsetAddr = gBuffer->len - len;
+                param->dataCpyOffsetAddr = param->gBuffer->len - param->framelen;
                 return;
             }
             break;
         }
         default:
-            fspState = HEADER_HIGH;
+            param->state = HEADER_HIGH;
             break;
         }
     }
@@ -233,24 +252,28 @@ static bool fspDataCrc(uint16_t crcNum, uint8_t *data, int size) {
 }
 
 // FspReceive Fsp接收
-void FspReceive(uint8_t *data, int dataLen) {
+void FspReceive(int pipe, uint8_t *data, int dataLen) {
     if (TZFifoWriteable(rxFifo) == false) {
         LW(TAG, "deal data is too slow.throw frame!");
         return;
     }
-    TZFifoWriteBytes(rxFifo, data, dataLen);
+
+    tRxTag tag;
+    tag.pipe = pipe;
+    tag.rxTime = TZTimeGet();
+    TZFifoWriteMix(rxFifo, (uint8_t *)&tag, sizeof(tag), data, dataLen);
 }
 
-// FspRegisterObserver() 注册Fsp回调函数
-bool FspRegisterObserver(TZDataFunc callback) {
-    if (gList == 0 || callback == NULL) {
+// FspRegisterObserver 注册Fsp回调函数
+bool FspRegisterObserver(TZPipeDataFunc callback) {
+    if (gObserverList == 0 || callback == NULL) {
         return false;
     }
     if (isExistObserver(callback)) {
         return true;
     }
 
-    TZListNode *node = TZListCreateNode(gList);
+    TZListNode *node = TZListCreateNode(gObserverList);
     if (node == NULL) {
         return false;
     }
@@ -263,12 +286,12 @@ bool FspRegisterObserver(TZDataFunc callback) {
 
     tItem *item = (tItem *)node->Data;
     item->callback = callback;
-    TZListAppend(gList, node);
+    TZListAppend(gObserverList, node);
     return true;
 }
 
-static void notifyObserver(uint8_t *bytes, int size) {
-    TZListNode *node = TZListGetHeader(gList);
+static void notifyObserver(uint8_t *bytes, int size, int pipe) {
+    TZListNode *node = TZListGetHeader(gObserverList);
     tItem *item = NULL;
     for (;;) {
         if (node == NULL) {
@@ -277,15 +300,15 @@ static void notifyObserver(uint8_t *bytes, int size) {
 
         item = (tItem *)node->Data;
         if (item->callback) {
-            item->callback(bytes, size);
+            item->callback(bytes, size, pipe);
         }
 
         node = node->Next;
     }
 }
 
-static bool isExistObserver(TZDataFunc callback) {
-    TZListNode *node = TZListGetHeader(gList);
+static bool isExistObserver(TZPipeDataFunc callback) {
+    TZListNode *node = TZListGetHeader(gObserverList);
     tItem *item = NULL;
     for (;;) {
         if (node == NULL) {
@@ -310,4 +333,59 @@ static bool rxFifoCreate(int itemSum, int itemSize) {
         return false;
     }
     return true;
+}
+
+static tFspParam *pipeParamGet(int pipe) {
+    TZListNode *node = TZListGetHeader(gParamList);
+    tFspParam *param = NULL;
+    for (;;) {
+        if (node == NULL) {
+            param = pipeParamCreate(pipe);
+            break;
+        }
+
+        param = (tFspParam *)node->Data;
+        if (param->pipe == pipe) {
+            break;
+        }
+
+        node = node->Next;
+    }
+
+    return param;
+}
+
+static tFspParam *pipeParamCreate(int pipe) {
+    if (gParamList == 0) {
+        return NULL;
+    }
+
+    TZListNode *node = TZListCreateNode(gParamList);
+    if (node == NULL) {
+        return NULL;
+    }
+    node->Data = TZMalloc(mid, sizeof(tFspParam));
+    if (node->Data == NULL) {
+        TZFree(node);
+        return NULL;
+    }
+    node->Size = sizeof(tItem);
+
+    tFspParam *item = (tFspParam *)node->Data;
+    item->pipe = pipe;
+    item->framelen = 0;
+    item->rxTime = 0;
+    item->state = HEADER_HIGH;
+    item->dataCpyOffsetAddr = 0;
+
+    item->gBuffer = TZMalloc(mid, sizeof(TZBufferDynamic) + gFrameMaxLen);
+    if (item->gBuffer == NULL) {
+        LE(TAG, "load failed!malloc buffer failed");
+        TZFree(node);
+        return NULL;
+    }
+
+    TZListAppend(gParamList, node);
+
+    return item;
 }
