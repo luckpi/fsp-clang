@@ -2,7 +2,6 @@
 // 帧分割协议
 // Authors: Gumy <gumingyang@sumec.com.cn>
 #include "fsp.h"
-#include "pt.h"
 
 #define TAG "fsp"
 

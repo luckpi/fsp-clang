@@ -17,7 +17,6 @@
 #include "tzmalloc.h"
 #include "tztime.h"
 #include "tztype.h"
-#include "vsocket.h"
 
 // FspLoad Fsp载入
 // mallocTotal malloc内存大小
