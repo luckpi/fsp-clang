@@ -300,7 +300,7 @@ static void notifyObserver(uint8_t *bytes, int size, int pipe) {
 
         item = (tItem *)node->Data;
         if (item->callback) {
-            item->callback(bytes, size, pipe);
+            item->callback(bytes, size, 0, 0, pipe);
         }
 
         node = node->Next;
