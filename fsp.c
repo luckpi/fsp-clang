@@ -59,7 +59,7 @@ static int task(void);
 static bool fspDataCrc(uint16_t crcNum, uint8_t *data, int size);
 static void notifyObserver(uint8_t *bytes, int size, int pipe);
 static bool isExistObserver(TZPipeDataFunc callback);
-static void fspRun(tFspParam *param, uint8_t *data, int dataLen);
+static void fspRun(uint8_t *data, int dataLen, tFspParam *param);
 static bool rxFifoCreate(int itemSum, int itemSize);
 static tFspParam *pipeParamGet(int pipe);
 static tFspParam *pipeParamCreate(int pipe);
@@ -148,7 +148,7 @@ static int task(void) {
 
     tFspParam *param = pipeParamGet(tag.pipe);
     fspTimeOutCheck(param, tag.rxTime);
-    fspRun(param, rxBuffer->buf, rxBuffer->len);
+    fspRun(rxBuffer->buf, rxBuffer->len, param);
 
     PT_END(&pt);
 }
@@ -164,7 +164,7 @@ static void fspTimeOutCheck(tFspParam *param, uint64_t timestamp) {
     param->rxTime = timestamp;
 }
 
-static void fspRun(tFspParam *param, uint8_t *data, int dataLen) {
+static void fspRun(uint8_t *data, int dataLen, tFspParam *param) {
     int i = 0;
 
     while (i < dataLen) {
@@ -251,7 +251,7 @@ static bool fspDataCrc(uint16_t crcNum, uint8_t *data, int size) {
 }
 
 // FspReceive Fsp接收
-void FspReceive(int pipe, uint8_t *data, int dataLen) {
+void FspReceive(uint8_t *data, int dataLen, int pipe) {
     if (TZFifoWriteable(rxFifo) == false) {
         LW(TAG, "deal data is too slow.throw frame!");
         return;
