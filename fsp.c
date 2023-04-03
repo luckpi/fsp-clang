@@ -27,11 +27,15 @@ typedef enum {
 typedef struct {
     uint64_t rxTime;
     int pipe;
+    uint32_t ip;
+    uint16_t port;
 } tRxTag;
 
 typedef struct {
     uint64_t rxTime;
     int pipe;
+    uint32_t ip;
+    uint16_t port;
     tFspState state;
     int framelen;
     int dataCpyOffsetAddr;
@@ -57,12 +61,12 @@ static uint64_t gTimeout = 0;
 
 static int task(void);
 static bool fspDataCrc(uint16_t crcNum, uint8_t *data, int size);
-static void notifyObserver(uint8_t *bytes, int size, int pipe);
+static void notifyObserver(uint8_t *bytes, int size, int pipe, uint32_t ip, uint16_t port);
 static bool isExistObserver(TZPipeDataFunc callback);
 static void fspRun(uint8_t *data, int dataLen, tFspParam *param);
 static bool rxFifoCreate(int itemSum, int itemSize);
-static tFspParam *pipeParamGet(int pipe);
-static tFspParam *pipeParamCreate(int pipe);
+static tFspParam *pipeParamGet(int pipe, uint32_t ip, uint16_t port);
+static tFspParam *pipeParamCreate(int pipe, uint32_t ip, uint16_t port);
 static void fspTimeOutCheck(tFspParam *param, uint64_t timestamp);
 
 // FspLoad Fsp载入
@@ -146,7 +150,7 @@ static int task(void) {
 
     rxBuffer->len = TZFifoReadMix(rxFifo, (uint8_t *)&tag, sizeof(tag), rxBuffer->buf, gFrameMaxLen);
 
-    tFspParam *param = pipeParamGet(tag.pipe);
+    tFspParam *param = pipeParamGet(tag.pipe, tag.ip, tag.port);
     fspTimeOutCheck(param, tag.rxTime);
     fspRun(rxBuffer->buf, rxBuffer->len, param);
 
@@ -220,7 +224,7 @@ static void fspRun(uint8_t *data, int dataLen, tFspParam *param) {
             if (param->framelen == 0) {
                 uint16_t crcNum = param->gBuffer->buf[0] << 8 | param->gBuffer->buf[1];
                 if (fspDataCrc(crcNum, &param->gBuffer->buf[2], param->gBuffer->len - 2) == true) {
-                    notifyObserver(&param->gBuffer->buf[2], param->gBuffer->len - 2, param->pipe);
+                    notifyObserver(&param->gBuffer->buf[2], param->gBuffer->len - 2, param->pipe, param->ip, param->port);
                     i += dataCpyLen;
                 }
                 param->dataCpyOffsetAddr = 0;
@@ -251,7 +255,7 @@ static bool fspDataCrc(uint16_t crcNum, uint8_t *data, int size) {
 }
 
 // FspReceive Fsp接收
-void FspReceive(uint8_t *data, int dataLen, int pipe) {
+void FspReceive(uint8_t *data, int dataLen, int pipe, uint32_t ip, uint16_t port) {
     if (TZFifoWriteable(rxFifo) == false) {
         LW(TAG, "deal data is too slow.throw frame!");
         return;
@@ -259,6 +263,8 @@ void FspReceive(uint8_t *data, int dataLen, int pipe) {
 
     tRxTag tag;
     tag.pipe = pipe;
+    tag.ip = ip;
+    tag.port = port;
     tag.rxTime = TZTimeGet();
     TZFifoWriteMix(rxFifo, (uint8_t *)&tag, sizeof(tag), data, dataLen);
 }
@@ -289,7 +295,7 @@ bool FspRegisterObserver(TZPipeDataFunc callback) {
     return true;
 }
 
-static void notifyObserver(uint8_t *bytes, int size, int pipe) {
+static void notifyObserver(uint8_t *bytes, int size, int pipe, uint32_t ip, uint16_t port) {
     TZListNode *node = TZListGetHeader(gObserverList);
     tItem *item = NULL;
     for (;;) {
@@ -299,7 +305,7 @@ static void notifyObserver(uint8_t *bytes, int size, int pipe) {
 
         item = (tItem *)node->Data;
         if (item->callback) {
-            item->callback(bytes, size, 0, 0, pipe);
+            item->callback(bytes, size, ip, port, pipe);
         }
 
         node = node->Next;
@@ -334,12 +340,12 @@ static bool rxFifoCreate(int itemSum, int itemSize) {
     return true;
 }
 
-static tFspParam *pipeParamGet(int pipe) {
+static tFspParam *pipeParamGet(int pipe, uint32_t ip, uint16_t port) {
     TZListNode *node = TZListGetHeader(gParamList);
     tFspParam *param = NULL;
     for (;;) {
         if (node == NULL) {
-            param = pipeParamCreate(pipe);
+            param = pipeParamCreate(pipe, ip, port);
             break;
         }
 
@@ -354,7 +360,7 @@ static tFspParam *pipeParamGet(int pipe) {
     return param;
 }
 
-static tFspParam *pipeParamCreate(int pipe) {
+static tFspParam *pipeParamCreate(int pipe, uint32_t ip, uint16_t port) {
     if (gParamList == 0) {
         return NULL;
     }
@@ -372,6 +378,8 @@ static tFspParam *pipeParamCreate(int pipe) {
 
     tFspParam *item = (tFspParam *)node->Data;
     item->pipe = pipe;
+    item->ip = ip;
+    item->port = port;
     item->framelen = 0;
     item->rxTime = 0;
     item->state = HEADER_HIGH;
@@ -379,7 +387,7 @@ static tFspParam *pipeParamCreate(int pipe) {
 
     item->gBuffer = TZMalloc(mid, sizeof(TZBufferDynamic) + gFrameMaxLen);
     if (item->gBuffer == NULL) {
-        LE(TAG, "load failed!malloc buffer failed");
+        LE(TAG, "pipe create fail!malloc failed");
         TZFree(node);
         return NULL;
     }

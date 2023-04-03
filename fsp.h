@@ -30,7 +30,7 @@ bool FspLoad(int mallocTotal, int frameMaxLen, int fifoItemSum, uint64_t timeout
 TZBufferDynamic *FspGetTxBytes(uint8_t *data, int dataLen, bool isNeedCrc);
 
 // FspReceive Fsp接收
-void FspReceive(uint8_t *data, int dataLen, int pipe);
+void FspReceive(uint8_t *data, int dataLen, int pipe, uint32_t ip, uint16_t port);
 
 // FspRegisterObserver 注册Fsp观察者
 bool FspRegisterObserver(TZPipeDataFunc callback);
