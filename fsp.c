@@ -70,8 +70,8 @@ static void notifyObserver(uint8_t *bytes, int size, int pipe, uint32_t ip, uint
 static bool isExistObserver(TZPipeDataFunc callback);
 
 // FspLoad 模块载入
-bool FspLoad(int pipeNum) {
-    gMid = TZMallocRegister(0, TAG, FSP_MALLOC_SIZE);
+bool FspLoad(int pipeNum, int mallocSize) {
+    gMid = TZMallocRegister(0, TAG, mallocSize);
     if (gMid == -1) {
         LE(TAG, "load failed!malloc failed");
         return false;
@@ -377,7 +377,7 @@ int FspFrameToBytes(uint8_t *src, int srcLen, bool isNeedCrc, uint8_t* dst, int 
 
 // FspIsFrameValid 是否有效的FSP帧
 bool FspIsFrameValid(uint8_t* frame, int len) {
-    if (frame < 6) {
+    if (len < 6) {
         return false;
     }
     if (frame[0] != 0xC5 || frame[1] != 0x5C) {

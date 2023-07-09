@@ -6,11 +6,8 @@
 
 #include "tztype.h"
 
-// malloc空间字节数
-#define FSP_MALLOC_SIZE 20480
-
 // FspLoad 模块载入
-bool FspLoad(int pipeNum);
+bool FspLoad(int pipeNum, int mallocSize);
 
 // FspAddPipe 增加管道.过期时间单位:ms
 bool FspAddPipe(int pipe, int frameLenMax, int expireTime, int fifoCache);
