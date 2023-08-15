@@ -10,6 +10,7 @@
 #include "tzlist.h"
 #include "tzmalloc.h"
 #include "tztime.h"
+#include "statistics.h"
 
 #define TAG "fsp"
 
@@ -57,6 +58,11 @@ typedef struct {
 
 #pragma pack()
 
+// 统计项id
+static int gStatRxTimeout = -1;
+static int gStatErrorFrameLen = -1;
+static int gStatErrorCrc = -1;
+
 static intptr_t gMid = 0;
 static intptr_t gObserverList = 0;
 static tCache* gCache = NULL;
@@ -71,6 +77,14 @@ static bool isExistObserver(TZPipeDataFunc callback);
 
 // FspLoad 模块载入
 bool FspLoad(int pipeNum, int mallocSize) {
+    gStatRxTimeout = StatisticsRegister("fsp_rx_timeout");
+    gStatErrorFrameLen = StatisticsRegister("fsp_err_len");
+    gStatErrorCrc = StatisticsRegister("fsp_err_crc");
+    if (gStatRxTimeout < 0 || gStatErrorFrameLen < 0 || gStatErrorCrc < 0) {
+        LE(TAG, "load failed!statistics register failed");
+        return false;
+    }
+
     gMid = TZMallocRegister(0, TAG, mallocSize);
     if (gMid == -1) {
         LE(TAG, "load failed!malloc failed");
@@ -181,6 +195,7 @@ static void checkFspRx(tCache* cache) {
         LW(TAG, "pipe:%d wait timeout.len:%d.now clear frame data", cache->pipe, cache->frame.len);
         cache->frame.state = STATE_WAIT_HEAD_HIGH;
         cache->frame.len = 0;
+        StatisticsAdd(gStatRxTimeout);
     }
 
     int count = TZFifoReadableItemCount(cache->fifo);
@@ -239,6 +254,7 @@ static void checkFspRx(tCache* cache) {
                     LE(TAG, "pipe:%d frame len is wrong.%d", cache->pipe, frame->frameLen);
                     frame->state = STATE_WAIT_HEAD_HIGH;
                     frame->len = 0;
+                    StatisticsAdd(gStatErrorFrameLen);
                 } else {
                     frame->state++;
                 }
@@ -256,6 +272,7 @@ static void checkFspRx(tCache* cache) {
                             LE(TAG, "pipe:%d frame crc is wrong.0x%04x 0x%04x", cache->pipe, crcGet, crcCalc);
                             frame->state = STATE_WAIT_HEAD_HIGH;
                             frame->len = 0;
+                            StatisticsAdd(gStatErrorCrc);
                             break;
                         }
                     }

@@ -6,3 +6,4 @@ https://github.com/jdhxyy/tzlist.git
 https://github.com/jdhxyy/pt.git
 https://github.com/jdhxyy/tztype-clang.git
 https://github.com/jdhxyy/crc16-clang.git
+https://github.com/jdhxyy/statistics.git
