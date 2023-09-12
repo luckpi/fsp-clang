@@ -277,7 +277,7 @@ static void checkFspRx(tCache* cache) {
                         }
                     }
 
-                    LI(TAG, "pipe:%d receive frame:%d crc:0x%x", cache->pipe, frame->len, crcGet);
+                    LD(TAG, "pipe:%d receive frame:%d crc:0x%x", cache->pipe, frame->len, crcGet);
                     notifyObserver(frame->buf + 6, frame->len - 6, cache->pipe, cache->ip, cache->port);
                     frame->state = STATE_WAIT_HEAD_HIGH;
                     frame->len = 0;
