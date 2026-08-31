@@ -352,10 +352,17 @@ static bool isExistObserver(TZPipeDataFunc callback) {
 // 返回值是FSP帧字节数.返回0表示转换失败.帧存储在dst中
 // 如果src长度足够长,可以设置dst等于src,这样转换后的帧会存放在src中
 int FspBytesToFrame(uint8_t *src, int srcLen, bool isNeedCrc, uint8_t* dst, int dstSize) {
-    uint16_t frameLen = srcLen + 6;
+    uint16_t frameLen = (uint16_t)(srcLen + 6);
     if (dstSize < frameLen) {
         LW(TAG, "bytes to frame failed!dst size is too short");
         return 0;
+    }
+
+    // 若dst等于src,先右移数据腾出帧头位置,实现原地组帧
+    bool isInPlace = (dst == src);
+    if (isInPlace == true) {
+        memmove(dst + 6, src, srcLen);
+        src = dst + 6;
     }
 
     int j = 0;
@@ -370,7 +377,9 @@ int FspBytesToFrame(uint8_t *src, int srcLen, bool isNeedCrc, uint8_t* dst, int 
     }
     dst[j++] = crc >> 8;
     dst[j++] = crc;
-    memmove(dst + j, src, srcLen);
+    if (isInPlace == false) {
+        memmove(dst + j, src, srcLen);
+    }
     j += srcLen;
     return j;
 }
